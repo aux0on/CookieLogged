@@ -2,30 +2,51 @@ local table_insert = table.insert
 
 local Maid = {}
 Maid.__index = Maid
-function Maid.new() return setmetatable({_tasks = {}, _destroyed = false}, Maid) end
+
+function Maid.new() 
+    return setmetatable({_tasks = {}, _destroyed = false}, Maid) 
+end
+
 function Maid:GiveTask(task)
     if self._destroyed then
-        if typeof(task) == "RBXScriptConnection" then task:Disconnect()
-        elseif typeof(task) == "Instance" then task:Destroy()
-        elseif type(task) == "function" then task()
-        elseif type(task) == "table" and type(task.Destroy) == "function" then task:Destroy() end
+        self:_cleanupTask(task)
         return
     end
     table_insert(self._tasks, task)
     return task
 end
+
+function Maid:GiveTasks(...)
+    for _, task in ipairs({...}) do
+        self:GiveTask(task)
+    end
+end
+
+function Maid:_cleanupTask(task)
+    local taskType = typeof(task)
+    if taskType == "RBXScriptConnection" then
+        task:Disconnect()
+    elseif taskType == "Instance" then
+        task:Destroy()
+    elseif taskType == "function" then
+        task()
+    elseif taskType == "table" and type(task.Destroy) == "function" then
+        task:Destroy()
+    end
+end
+
 function Maid:DoCleaning()
     if self._destroyed then return end
     self._destroyed = true
-    for _, t in pairs(self._tasks) do
-        if typeof(t) == "RBXScriptConnection" then t:Disconnect()
-        elseif typeof(t) == "Instance" then t:Destroy()
-        elseif type(t) == "function" then t()
-        elseif type(t) == "table" and type(t.Destroy) == "function" then t:Destroy() end
+    for _, task in ipairs(self._tasks) do
+        self:_cleanupTask(task)
     end
     self._tasks = {}
 end
-function Maid:Destroy() self:DoCleaning() end
+
+function Maid:Destroy() 
+    self:DoCleaning() 
+end
 
 local RootMaid = Maid.new()
 
@@ -36,203 +57,524 @@ local Services = {
     ReplicatedStorage = game:GetService("ReplicatedStorage"),
     RunService = game:GetService("RunService"),
     UserInputService = game:GetService("UserInputService"),
-    TeleportService = game:GetService("TeleportService"),
-    HttpService = game:GetService("HttpService"),
-    Lighting = game:GetService("Lighting"),
-    MarketplaceService = game:GetService("MarketplaceService"),
     StarterGui = game:GetService("StarterGui"),
-    CoreGui = game:GetService("CoreGui")
+    CoreGui = game:GetService("CoreGui"),
+    Workspace = game:GetService("Workspace"),
+    TweenService = game:GetService("TweenService")
 }
 
 local LocalPlayer = Services.Players.LocalPlayer
 
+local __PCLR = Color3.new
+local __RGB = Color3.fromRGB
+local __UD2 = UDim2.new
+local __UD = UDim.new
+local __V2 = Vector2.new
+
+local function getfserv(s)
+    local ok, svc = pcall(function() return game:GetService(s) end)
+    if ok and svc then return svc end
+    ok, svc = pcall(function() return game:FindService(s) end)
+    if ok and svc then return svc end
+    return game[s]
+end
+
+local __RS   = getfserv("RunService")
+local __UIS  = getfserv("UserInputService")
+local __PLRS = getfserv("Players")
+local __TS   = getfserv("TweenService")
+
+local BBSystem = {Buttons = {}, Connections = {}}
+
+local function bb_safecallback(callback)
+    if not callback then return end
+    local ok, err = xpcall(callback, function(e) return debug.traceback(e) end)
+    if not ok then warn("[BB ERROR] " .. tostring(err)) end
+end
+
+local function BB_GetStorage()
+    local parent = gethui and gethui()
+    if not parent or typeof(parent) ~= "Instance" then
+        parent = getfserv("CoreGui")
+    end
+    if not parent or typeof(parent) ~= "Instance" then
+        parent = __PLRS.LocalPlayer:WaitForChild("PlayerGui", 5)
+    end
+    if typeof(parent) ~= "Instance" then
+        parent = __PLRS.LocalPlayer:WaitForChild("PlayerGui")
+    end
+
+    local sg = parent:FindFirstChild("@BBStorage")
+    if not sg then
+        sg = Instance.new("ScreenGui")
+        sg.Name = "@BBStorage"
+        sg.ResetOnSpawn = false
+        sg.IgnoreGuiInset = true
+        pcall(function() sg.ScreenInsets = Enum.ScreenInsets.None end)
+        sg.Parent = parent
+    end
+    return sg
+end
+
+local __BB_GRAD_SEQ = ColorSequence.new({
+    ColorSequenceKeypoint.new(0,    __PCLR(0.0784314, 0.0784314, 0.0784314)),
+    ColorSequenceKeypoint.new(0.75, __PCLR(0.0784314, 0.0784314, 0.54902)),
+    ColorSequenceKeypoint.new(1,    __PCLR(0.470588,  0.156863,  0.470588))
+})
+
+local function BB_MakeDraggable(gui, func, ripple, sound)
+    local dragging, dragInput, dragStart, startPos
+    local hasMoved = false
+    local tInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    local normalSize    = __UD2(0, 200, 0, 75)
+    local normalTxtSize = 24
+    local bigSize       = __UD2(0, 220, 0, 82.5)
+    local bigTxtSize    = 26.4
+
+    gui.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging  = true
+            hasMoved  = false
+            dragStart = input.Position
+            startPos  = gui.Position
+            __TS:Create(gui, tInfo, {Size = bigSize, TextSize = bigTxtSize}):Play()
+            local absPos = gui.AbsolutePosition
+            ripple.Position = __UD2(0, input.Position.X - absPos.X, 0, input.Position.Y - absPos.Y)
+            ripple.Size = __UD2(0, 0, 0, 0)
+            ripple.BackgroundTransparency = 0.5
+            ripple.Visible = true
+            sound:Play()
+            __TS:Create(ripple, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
+                Size = __UD2(0, 300, 0, 300),
+                BackgroundTransparency = 1
+            }):Play()
+            local rel
+            rel = __UIS.InputEnded:Connect(function(endInput)
+                if endInput.UserInputType == input.UserInputType then
+                    dragging = false
+                    __TS:Create(gui, tInfo, {Size = normalSize, TextSize = normalTxtSize}):Play()
+                    if not hasMoved then bb_safecallback(func) end
+                    rel:Disconnect()
+                end
+            end)
+        end
+    end)
+    gui.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    __UIS.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            if delta.Magnitude > 7 then hasMoved = true end
+            gui.Position = __UD2(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+end
+
+local muteButtonSounds = false
+local muteToggleConnection = nil
+
+local function UpdateAllButtonSounds()
+    local volume = muteButtonSounds and 0 or 0.5
+    for id, btn in pairs(BBSystem.Buttons) do
+        local sound = btn:FindFirstChild("Sound")
+        if sound then
+            sound.Volume = volume
+        end
+    end
+    for id, btn in pairs(BindableButtons.Buttons) do
+        local sound = btn:FindFirstChild("Sound")
+        if sound then
+            sound.Volume = volume
+        end
+    end
+end
+
+local function AddBigButton(id, text, func, isGold)
+    if BBSystem.Buttons[id] then return end
+    local storage = BB_GetStorage()
+    local bb = Instance.new("TextButton")
+    bb.Name = id
+    bb.Size = __UD2(0, 200, 0, 75)
+    bb.Position = __UD2(0.5, 0, 0.5, 0)
+    bb.AnchorPoint = __V2(0.5, 0.5)
+    bb.BackgroundColor3 = __RGB(255, 255, 255)
+    bb.BackgroundTransparency = 0.9
+    bb.BorderSizePixel = 0
+    bb.Font = Enum.Font.Jura
+    bb.Text = text
+    bb.TextSize = 24
+    bb.TextColor3 = __RGB(255, 255, 255)
+    bb.TextWrapped = true
+    bb.ClipsDescendants = true
+    bb.AutoButtonColor = false
+    bb.ZIndex = 5
+    bb.Parent = storage
+
+    Instance.new("UICorner", bb).CornerRadius = __UD(0, 5)
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = __RGB(255, 255, 255)
+    stroke.Thickness = 1.5
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    stroke.Parent = bb
+    local gradient = Instance.new("UIGradient")
+    
+    if isGold then
+        gradient.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0,    __RGB(255, 215, 0)),
+            ColorSequenceKeypoint.new(0.5,  __RGB(255, 140, 0)),
+            ColorSequenceKeypoint.new(1,    __RGB(184, 134, 11))
+        })
+    else
+        gradient.Color = __BB_GRAD_SEQ
+    end
+    gradient.Parent = stroke
+
+    local ripple = Instance.new("Frame")
+    ripple.Name = "@ripple"
+    ripple.BackgroundColor3 = isGold and __RGB(255, 215, 0) or __RGB(0, 155, 255)
+    ripple.BackgroundTransparency = 0.5
+    ripple.ZIndex = 4
+    ripple.Size = __UD2(0, 0, 0, 0)
+    ripple.AnchorPoint = __V2(0.5, 0.5)
+    ripple.Visible = false
+    ripple.Parent = bb
+    Instance.new("UICorner", ripple).CornerRadius = __UD(1, 0)
+
+    local sound = Instance.new("Sound")
+    sound.SoundId = "rbxassetid://3868133279"
+    sound.Volume = muteButtonSounds and 0 or 0.5
+    sound.Parent = bb
+
+    BB_MakeDraggable(bb, func, ripple, sound)
+    BBSystem.Connections[id] = __RS.RenderStepped:Connect(function()
+        gradient.Rotation = (gradient.Rotation + 1) % 360
+    end)
+    BBSystem.Buttons[id] = bb
+    return bb
+end
+
+local function DeleteBigButton(id)
+    if BBSystem.Buttons[id] then
+        if BBSystem.Connections[id] then
+            BBSystem.Connections[id]:Disconnect()
+            BBSystem.Connections[id] = nil
+        end
+        BBSystem.Buttons[id]:Destroy()
+        BBSystem.Buttons[id] = nil
+    end
+end
+
+local BindableButtons = {Buttons = {}, Maids = {}, Count = 0}
+
+local __SHAPES = {
+    [0] = "rbxassetid://86221076925479",
+    [1] = "rbxassetid://96242665417546",
+    [2] = "rbxassetid://97129189935336",
+    [3] = "rbxassetid://76165862027868",
+    [4] = "rbxassetid://125868092127496"
+}
+
+local __NORMAL_COLOR = ColorSequence.new({
+    ColorSequenceKeypoint.new(0,   __PCLR(0.133333, 0.827451, 0.494118)),
+    ColorSequenceKeypoint.new(0.6, __PCLR(0.231373, 0.509804, 0.498039)),
+    ColorSequenceKeypoint.new(1,   __PCLR(0.501961, 0.501961, 0.501961))
+})
+
+local __WAIT_COLOR = ColorSequence.new({
+    ColorSequenceKeypoint.new(0,   __PCLR(0.827451, 0.133333, 0.133333)),
+    ColorSequenceKeypoint.new(0.6, __PCLR(0.509804, 0.231373, 0.231373)),
+    ColorSequenceKeypoint.new(1,   __PCLR(0.501961, 0.501961, 0.501961))
+})
+
+local __GOLD_NORMAL_COLOR = ColorSequence.new({
+    ColorSequenceKeypoint.new(0,   __RGB(255, 215, 0)),
+    ColorSequenceKeypoint.new(0.6, __RGB(255, 140, 0)),
+    ColorSequenceKeypoint.new(1,   __RGB(184, 134, 11))
+})
+
+local __GOLD_WAIT_COLOR = ColorSequence.new({
+    ColorSequenceKeypoint.new(0,   __RGB(255, 69, 0)),
+    ColorSequenceKeypoint.new(0.6, __RGB(139, 69, 19)),
+    ColorSequenceKeypoint.new(1,   __RGB(160, 82, 45))
+})
+
+local function bind_safecallback(callback)
+    if not callback then return end
+    local ok, err = xpcall(callback, function(e) return debug.traceback(e) end)
+    if not ok then warn("[BIND ERROR] " .. tostring(err)) end
+end
+
+local function Bind_GetStorage()
+    local parent = gethui and gethui()
+    if not parent or typeof(parent) ~= "Instance" then
+        parent = getfserv("CoreGui")
+    end
+    if not parent or typeof(parent) ~= "Instance" then
+        parent = __PLRS.LocalPlayer:WaitForChild("PlayerGui", 5)
+    end
+    if typeof(parent) ~= "Instance" then
+        parent = __PLRS.LocalPlayer:WaitForChild("PlayerGui")
+    end
+
+    local sg = parent:FindFirstChild("@bindstorage")
+    if not sg then
+        sg = Instance.new("ScreenGui")
+        sg.Name = "@bindstorage"
+        sg.ResetOnSpawn = false
+        sg.IgnoreGuiInset = true
+        pcall(function() sg.ScreenInsets = Enum.ScreenInsets.None end)
+        sg.Parent = parent
+    end
+    return sg
+end
+
+local function Bind_MakeDraggable(gui, maid, ripple, sound, clickFunc)
+    local dragging, dragInput, dragStart, startPos
+    local hasMoved = false
+    
+    maid:GiveTask(gui.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging, dragStart, startPos = true, input.Position, gui.Position
+            hasMoved = false
+            sound:Play()
+            local absPos = gui.AbsolutePosition
+            ripple.Position = __UD2(0, input.Position.X - absPos.X, 0, input.Position.Y - absPos.Y)
+            ripple.Size = __UD2(0, 0, 0, 0)
+            ripple.BackgroundTransparency = 0.5
+            ripple.Visible = true
+            __TS:Create(ripple, TweenInfo.new(0.4, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
+                Size = __UD2(0, 45, 0, 45),
+                BackgroundTransparency = 1
+            }):Play()
+
+            local rel
+            rel = __UIS.InputEnded:Connect(function(endInput)
+                if endInput.UserInputType == input.UserInputType then
+                    dragging = false
+                    if not hasMoved then
+                        bind_safecallback(clickFunc)
+                    end
+                    rel:Disconnect()
+                end
+            end)
+        end
+    end))
+    
+    maid:GiveTask(gui.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end))
+    
+    maid:GiveTask(__UIS.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            if delta.Magnitude > 7 then hasMoved = true end
+            local screen = gui.Parent.AbsoluteSize
+            gui.Position = __UD2(startPos.X.Scale + (delta.X / screen.X), 0, startPos.Y.Scale + (delta.Y / screen.Y), 0)
+        end
+    end))
+end
+
+function BindableButtons.AddBButton(id, text, clickFunc, isGold)
+    if BindableButtons.Buttons[id] then return end
+    
+    local buttonMaid = Maid.new()
+    local camera = workspace.CurrentCamera
+    local screen = camera.ViewportSize
+    local buttonSizeY = 0.11
+    local widthScale = buttonSizeY * (screen.Y / screen.X)
+    local xPos = 0.1 + ((BindableButtons.Count % 8) * (widthScale + 0.005))
+    local yPos = 0.9 - (math.floor(BindableButtons.Count / 8) * (buttonSizeY + 0.015))
+
+    local ImageButton = Instance.new("ImageButton")
+    ImageButton.Name = id
+    ImageButton.Size = __UD2(widthScale, 0, buttonSizeY, 0)
+    ImageButton.Position = __UD2(xPos, 0, yPos, 0)
+    ImageButton.AnchorPoint = __V2(0.5, 0.5)
+    ImageButton.Image = __SHAPES[0]
+    ImageButton.BackgroundTransparency = 1
+    ImageButton.BorderSizePixel = 0
+    ImageButton.ClipsDescendants = false
+    ImageButton.AutoButtonColor = false
+    ImageButton.Parent = Bind_GetStorage()
+    buttonMaid:GiveTask(ImageButton)
+
+    local TextLabel = Instance.new("TextLabel", ImageButton)
+    TextLabel.Name = "@Text"
+    TextLabel.Size = __UD2(0.8, 0, 0.8, 0)
+    TextLabel.Position = __UD2(0.5, 0, 0.5, 0)
+    TextLabel.AnchorPoint = __V2(0.5, 0.5)
+    TextLabel.BackgroundTransparency = 1
+    TextLabel.Font = Enum.Font.Jura
+    TextLabel.Text = text
+    TextLabel.TextColor3 = __PCLR(1, 1, 1)
+    TextLabel.TextSize = 10
+    TextLabel.TextWrapped = true
+    TextLabel.ZIndex = 3
+
+    local Aspect = Instance.new("UIAspectRatioConstraint", ImageButton)
+    Aspect.AspectRatio = 1
+    Aspect.AspectType = Enum.AspectType.ScaleWithParentSize
+
+    local Stroke = Instance.new("UIGradient", ImageButton)
+    Stroke.Name = "@Stroke"
+    if isGold then
+        Stroke.Color = __GOLD_NORMAL_COLOR
+    else
+        Stroke.Color = __NORMAL_COLOR
+    end
+
+    local ripple = Instance.new("Frame")
+    ripple.Name = "@ripple"
+    ripple.BackgroundColor3 = isGold and __RGB(255, 215, 0) or __RGB(0, 155, 255)
+    ripple.BackgroundTransparency = 0.5
+    ripple.Size = __UD2(0, 0, 0, 0)
+    ripple.AnchorPoint = __V2(0.5, 0.5)
+    ripple.Visible = false
+    ripple.ZIndex = 2
+    ripple.Parent = ImageButton
+    Instance.new("UICorner", ripple).CornerRadius = __UD(1, 0)
+
+    local sound = Instance.new("Sound")
+    sound.SoundId = "rbxassetid://3868133279"
+    sound.Volume = muteButtonSounds and 0 or 0.5
+    sound.Parent = ImageButton
+
+    Bind_MakeDraggable(ImageButton, buttonMaid, ripple, sound, clickFunc)
+    buttonMaid:GiveTask(__RS.RenderStepped:Connect(function()
+        Stroke.Rotation = (Stroke.Rotation + 1) % 360
+    end))
+
+    BindableButtons.Buttons[id] = ImageButton
+    BindableButtons.Maids[id] = buttonMaid
+    BindableButtons.Count = BindableButtons.Count + 1
+    return ImageButton
+end
+
+function BindableButtons.DeleteBButton(id)
+    if BindableButtons.Maids[id] then
+        BindableButtons.Maids[id]:Destroy()
+        BindableButtons.Maids[id] = nil
+        BindableButtons.Buttons[id] = nil
+    end
+end
+
+function BindableButtons.UpdateBButtonText(id, text, isWaiting, isGold)
+    local btn = BindableButtons.Buttons[id]
+    if not btn then return end
+    
+    local textLabel = btn:FindFirstChild("@Text")
+    if textLabel then
+        textLabel.Text = text
+    end
+    
+    local stroke = btn:FindFirstChild("@Stroke")
+    if stroke then
+        if isGold then
+            stroke.Color = isWaiting and __GOLD_WAIT_COLOR or __GOLD_NORMAL_COLOR
+        else
+            stroke.Color = isWaiting and __WAIT_COLOR or __NORMAL_COLOR
+        end
+    end
+end
+
 local function GetSafeGuiRoot()
-    local success, result = pcall(function() return gethui() end)
-    if success and typeof(result) == "Instance" then
+    local success, result = pcall(function() 
+        return gethui() 
+    end)
+    if success and result and typeof(result) == "Instance" then
         return result
     end
     return Services.CoreGui
 end
 
-local hiddenGuiParent = GetSafeGuiRoot()
-local hiddenGui = hiddenGuiParent:FindFirstChild("HiddenGui")
-if not hiddenGui then
-    hiddenGui = Instance.new("ScreenGui")
-    hiddenGui.Name = "HiddenGui"
-    hiddenGui.ResetOnSpawn = false
-    hiddenGui.IgnoreGuiInset = true
-    hiddenGui.Parent = hiddenGuiParent
-    RootMaid:GiveTask(hiddenGui)
-end
+local hiddenGui = Instance.new("ScreenGui")
+hiddenGui.Name = "HiddenGui"
+hiddenGui.ResetOnSpawn = false
+hiddenGui.IgnoreGuiInset = true
+hiddenGui.Parent = GetSafeGuiRoot()
+RootMaid:GiveTask(hiddenGui)
 
 local _game = shared.game_name
 
 if _game == "Murder Mystery 2" or _game == "Murder Mystery Modded" then
 
+-- ABOUT SECTION
+local aboutSection = shared.AddSection("About")
+
+aboutSection:AddParagraph("Bomb Jump+", "Plugin Made by @lzzzx")
+
+aboutSection:AddToggle("Mute Button SFX", function(bool)
+    muteButtonSounds = bool
+    UpdateAllButtonSounds()
+end)
+
+shared.Notify("LZZZX ON TOP NIGGA", 5)
+
+-- BOMB JUMP SECTION
 local section = shared.AddSection("Bomb Jump+")
 
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local UserInputService = game:GetService("UserInputService")
-local Workspace = game:GetService("Workspace")
-
-local LocalPlayer = Players.LocalPlayer
-
-local bjGui = nil
-local bjBtn = nil
-local timerGui = nil
-local timerDisplay = nil
 local onCooldown = false
 local bombJumpEnabled = false
-local clickBombJumpEnabled = false
-local guiEnabled = false
-local timerGuiEnabled = false
 local debounce = false
-local bjSize = 40
-local timerSize = 40
 local autoGetBomb = false
 local justRespawned = false
+local bigButtonSize = 200
+local bindButtonSize = 0.11
+local bjBindButton = nil
 
-local activeTouches = {}
-local TAP_MOVEMENT_THRESHOLD = 10
-local TAP_TIME_THRESHOLD = 0.3
+local BOMB_NAMES = {"FakeBomb"}
 
-local BOMB_NAMES = {"Bomb", "PrankBomb", "FakeBomb"}
+local BombJumpMaid = Maid.new()
+RootMaid:GiveTask(BombJumpMaid)
 
-local BombJumpMaid = nil
-local BombJumpGuiMaid = nil
-local BombJumpTimerMaid = nil
-local ClickBombJumpMaid = nil
+local function ResetCooldown()
+    onCooldown = false
+    local bigBtn = BBSystem.Buttons["bombjump_big"]
+    if bigBtn then bigBtn.Text = "Bomb Jump" end
+    if bjBindButton then
+        BindableButtons.UpdateBButtonText("bombjump_bind", "BJ", false, false)
+    end
+end
 
-section:AddLabel("Different Bomb Jump Options")
-
-function CreateBJButton()
-    if BombJumpGuiMaid then BombJumpGuiMaid:DoCleaning() BombJumpGuiMaid = nil end
-    BombJumpGuiMaid = Maid.new()
+local function StartCooldown()
+    onCooldown = true
+    debounce = false
+    local bigBtn = BBSystem.Buttons["bombjump_big"]
+    if bigBtn then bigBtn.Text = "Wait" end
+    if bjBindButton then
+        BindableButtons.UpdateBButtonText("bombjump_bind", "Wait", true, false)
+    end
     
-    bjGui = Instance.new("ScreenGui", LocalPlayer:WaitForChild("PlayerGui"))
-    bjGui.Name = "BJGui"
-    bjGui.ResetOnSpawn = false
-    BombJumpGuiMaid:GiveTask(bjGui)
-    
-    bjBtn = Instance.new("TextButton", bjGui)
-    bjBtn.Name = "BJButton"
-    bjBtn.Text = "Ready"
-    bjBtn.TextSize = 14
-    bjBtn.Size = UDim2.new(0, bjSize, 0, bjSize)
-    bjBtn.Position = UDim2.new(0.5, -bjSize/2, 0.8, 0)
-    bjBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-    bjBtn.TextColor3 = Color3.new(1, 1, 1)
-    bjBtn.Font = Enum.Font.SourceSansLight
-    bjBtn.BackgroundTransparency = 0.3
-    Instance.new("UICorner", bjBtn).CornerRadius = UDim.new(1, 0)
-    
-    local stroke = Instance.new("UIStroke", bjBtn)
-    stroke.Thickness = 2.5
-    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    
-    local gradient = Instance.new("UIGradient", stroke)
-    gradient.Color = ColorSequence.new{
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 85, 255)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 0, 0))
-    }
-    gradient.Rotation = 45
-    
-    bjBtn.MouseButton1Click:Connect(function()
-        if not onCooldown and not debounce then
-            FastBombJump()
+    task.spawn(function()
+        for i = 22, 1, -1 do
+            if not onCooldown then break end
+            local bigBtn = BBSystem.Buttons["bombjump_big"]
+            if bigBtn then bigBtn.Text = tostring(i) end
+            if bjBindButton then
+                BindableButtons.UpdateBButtonText("bombjump_bind", tostring(i), true, false)
+            end
+            task.wait(1)
         end
-    end)
-    
-    local dragging, dragStart, startPos
-    bjBtn.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = bjBtn.Position
-            input.Changed:Connect(function() 
-                if input.UserInputState == Enum.UserInputState.End then 
-                    dragging = false 
-                end 
-            end)
-        end
-    end)
-    
-    bjBtn.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            local delta = input.Position - dragStart
-            bjBtn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-        end
+        if onCooldown then ResetCooldown() end
     end)
 end
 
-function CreateTimerDisplay()
-    if BombJumpTimerMaid then BombJumpTimerMaid:DoCleaning() BombJumpTimerMaid = nil end
-    BombJumpTimerMaid = Maid.new()
-    
-    timerGui = Instance.new("ScreenGui", LocalPlayer:WaitForChild("PlayerGui"))
-    timerGui.Name = "TimerGui"
-    timerGui.ResetOnSpawn = false
-    BombJumpTimerMaid:GiveTask(timerGui)
-    
-    timerDisplay = Instance.new("TextLabel", timerGui)
-    timerDisplay.Name = "TimerDisplay"
-    timerDisplay.Text = "Ready"
-    timerDisplay.TextSize = 14
-    timerDisplay.Size = UDim2.new(0, timerSize, 0, timerSize)
-    timerDisplay.Position = UDim2.new(0.5, -timerSize/2 + 60, 0.8, 0)
-    timerDisplay.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-    timerDisplay.TextColor3 = Color3.new(1, 1, 1)
-    timerDisplay.Font = Enum.Font.SourceSansLight
-    timerDisplay.BackgroundTransparency = 0.3
-    Instance.new("UICorner", timerDisplay).CornerRadius = UDim.new(1, 0)
-    
-    local stroke = Instance.new("UIStroke", timerDisplay)
-    stroke.Thickness = 2.5
-    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    
-    local gradient = Instance.new("UIGradient", stroke)
-    gradient.Color = ColorSequence.new{
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 85, 255)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 0, 0))
-    }
-    gradient.Rotation = 45
-    
-    local dragging = false
-    local dragStart, startPos
-    
-    timerDisplay.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = timerDisplay.Position
-            input.Changed:Connect(function() 
-                if input.UserInputState == Enum.UserInputState.End then 
-                    dragging = false 
-                end 
-            end)
-        end
-    end)
-    
-    timerDisplay.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            local delta = input.Position - dragStart
-            timerDisplay.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-        end
-    end)
-end
-
-function GetCenterPosition()
+local function GetCenterPosition()
     local character = LocalPlayer.Character
     if character and character:FindFirstChild("HumanoidRootPart") then
-        local camera = Workspace.CurrentCamera
+        local camera = Services.Workspace.CurrentCamera
         local lookDir = camera.CFrame.LookVector
         return character.HumanoidRootPart.Position + (lookDir * 5)
     end
     return nil
 end
 
-function MakeCharacterJump()
+local function MakeCharacterJump()
     local character = LocalPlayer.Character
     if character then
         local humanoid = character:FindFirstChild("Humanoid")
@@ -242,55 +584,7 @@ function MakeCharacterJump()
     end
 end
 
-function ResetCooldown()
-    onCooldown = false
-    
-    if bjBtn and bjBtn.Parent then
-        bjBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-        bjBtn.Text = "Ready"
-    end
-    
-    if timerDisplay and timerDisplay.Parent then
-        timerDisplay.Text = "Ready"
-        timerDisplay.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-    end
-end
-
-function StartCooldown()
-    onCooldown = true
-    debounce = false
-    
-    if bjBtn then
-        bjBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-        bjBtn.Text = "Wait"
-    end
-    
-    if timerDisplay then
-        timerDisplay.Text = "Wait"
-        timerDisplay.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-    end
-    
-    task.spawn(function()
-        for i = 22, 1, -1 do
-            if not onCooldown then break end
-            
-            if bjBtn and bjBtn.Parent then
-                bjBtn.Text = tostring(i)
-            end
-            
-            if timerDisplay then
-                timerDisplay.Text = tostring(i)
-            end
-            task.wait(1)
-        end
-        
-        if onCooldown then
-            ResetCooldown()
-        end
-    end)
-end
-
-function UnequipBomb()
+local function UnequipBomb()
     task.spawn(function()
         task.wait(0.5)
         local character = LocalPlayer.Character
@@ -306,21 +600,7 @@ function UnequipBomb()
     end)
 end
 
-function GetBombInHand()
-    local character = LocalPlayer.Character
-    if not character then return nil end
-    
-    for _, bombName in ipairs(BOMB_NAMES) do
-        local bomb = character:FindFirstChild(bombName)
-        if bomb then
-            return bomb
-        end
-    end
-    
-    return nil
-end
-
-function GetAnyBomb()
+local function GetAnyBomb()
     local character = LocalPlayer.Character
     if not character then return false, nil end
     
@@ -340,32 +620,29 @@ function GetAnyBomb()
         end
     end
     
-    local success = pcall(function()
-        ReplicatedStorage.Remotes.Extras.ReplicateToy:InvokeServer("FakeBomb")
+    pcall(function()
+        Services.ReplicatedStorage.Remotes.Extras.ReplicateToy:InvokeServer("FakeBomb")
     end)
     
-    if success then
-        for _ = 1, 5 do
-            for _, bombName in ipairs(BOMB_NAMES) do
-                local bomb = character:FindFirstChild(bombName)
-                if bomb then return true, bomb end
-                
-                if backpack then
-                    bomb = backpack:FindFirstChild(bombName)
-                    if bomb then
-                        bomb.Parent = character
-                        return true, bomb
-                    end
+    for _ = 1, 5 do
+        for _, bombName in ipairs(BOMB_NAMES) do
+            local bomb = character:FindFirstChild(bombName)
+            if bomb then return true, bomb end
+            if backpack then
+                bomb = backpack:FindFirstChild(bombName)
+                if bomb then
+                    bomb.Parent = character
+                    return true, bomb
                 end
             end
-            task.wait(0.05)
         end
+        task.wait(0.05)
     end
     
     return false, nil
 end
 
-function FastBombJump()
+local function FastBombJump()
     if onCooldown or debounce or justRespawned then return end
     debounce = true
     
@@ -397,344 +674,177 @@ function FastBombJump()
     end)
 end
 
-function SetupBombEquipDetection()
-    if ClickBombJumpMaid then ClickBombJumpMaid:DoCleaning() ClickBombJumpMaid = nil end
-    if not clickBombJumpEnabled then return end
-    
+local function IsHoldingBomb()
     local character = LocalPlayer.Character
-    if not character then return end
+    if not character then return false end
     
-    ClickBombJumpMaid = Maid.new()
-    
-    ClickBombJumpMaid:GiveTask(character.ChildAdded:Connect(function(child)
-        if not clickBombJumpEnabled or justRespawned then return end
-        
-        for _, bombName in ipairs(BOMB_NAMES) do
-            if child.Name == bombName then
-                if not onCooldown and not debounce then
-                    FastBombJump()
-                end
-                break
-            end
+    for _, bombName in ipairs(BOMB_NAMES) do
+        if character:FindFirstChild(bombName) then
+            return true
         end
-    end))
+    end
+    return false
 end
 
-BombJumpMaid = Maid.new()
-RootMaid:GiveTask(BombJumpMaid)
+local activeTouches = {}
+local TAP_MOVEMENT_THRESHOLD = 10
+local TAP_TIME_THRESHOLD = 0.3
 
-BombJumpMaid:GiveTask(UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-    
-    if input.UserInputType == Enum.UserInputType.Touch or 
-       input.UserInputType == Enum.UserInputType.MouseButton1 then
-        
-        activeTouches[input] = {
-            startPosition = input.Position,
-            startTime = tick(),
-            moved = false
-        }
-    end
-end))
-
-BombJumpMaid:GiveTask(UserInputService.InputChanged:Connect(function(input)
-    local touchData = activeTouches[input]
-    if not touchData then return end
-    
-    local delta = input.Position - touchData.startPosition
-    local distance = math.sqrt(delta.X * delta.X + delta.Y * delta.Y)
-    
-    if distance > TAP_MOVEMENT_THRESHOLD then
-        touchData.moved = true
-    end
-end))
-
-BombJumpMaid:GiveTask(UserInputService.InputEnded:Connect(function(input, gameProcessed)
-    if gameProcessed then 
-        activeTouches[input] = nil
-        return 
-    end
-    
-    local touchData = activeTouches[input]
-    if not touchData then return end
-    
-    local touchDuration = tick() - touchData.startTime
-    local isRealTap = not touchData.moved and touchDuration <= TAP_TIME_THRESHOLD
-    
-    if isRealTap and bombJumpEnabled and not onCooldown and not debounce then
-        local bombInHand = GetBombInHand()
-        if bombInHand then
-            FastBombJump()
+BombJumpMaid:GiveTasks(
+    Services.UserInputService.InputBegan:Connect(function(input, gp)
+        if gp then return end
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            activeTouches[input] = {startPosition = input.Position, startTime = tick(), moved = false}
         end
-    end
-    
-    activeTouches[input] = nil
-end))
-
-BombJumpMaid:GiveTask(LocalPlayer.CharacterAdded:Connect(function()
-    ResetCooldown()
-    activeTouches = {}
-    justRespawned = true
-    
-    task.spawn(function()
+    end),
+    Services.UserInputService.InputChanged:Connect(function(input)
+        local data = activeTouches[input]
+        if data and (input.Position - data.startPosition).Magnitude > TAP_MOVEMENT_THRESHOLD then
+            data.moved = true
+        end
+    end),
+    Services.UserInputService.InputEnded:Connect(function(input, gp)
+        if gp then activeTouches[input] = nil return end
+        local data = activeTouches[input]
+        if data and not data.moved and tick() - data.startTime <= TAP_TIME_THRESHOLD then
+            if bombJumpEnabled and not onCooldown and not debounce then
+                if IsHoldingBomb() then
+                    FastBombJump()
+                end
+            end
+        end
+        activeTouches[input] = nil
+    end),
+    LocalPlayer.CharacterAdded:Connect(function()
+        ResetCooldown()
+        activeTouches = {}
+        justRespawned = true
         task.wait(1)
         justRespawned = false
+        if autoGetBomb then
+            task.wait(0.2)
+            pcall(function() Services.ReplicatedStorage.Remotes.Extras.ReplicateToy:InvokeServer("FakeBomb") end)
+        end
     end)
-    
-    if autoGetBomb then
-        task.wait(1.2)
-        pcall(function()
-            ReplicatedStorage.Remotes.Extras.ReplicateToy:InvokeServer("FakeBomb")
-        end)
-    end
-    
-    if clickBombJumpEnabled then
-        task.wait(1.2)
-        SetupBombEquipDetection()
-    end
-end))
+)
 
-section:AddToggle("Enable Auto Bomb Jump", function(bool)
-    bombJumpEnabled = bool
-end)
-
-section:AddToggle("Enable Equip Bomb Jump", function(bool)
-    clickBombJumpEnabled = bool
-    
-    if bool then
-        SetupBombEquipDetection()
-    else
-        if ClickBombJumpMaid then ClickBombJumpMaid:DoCleaning() ClickBombJumpMaid = nil end
-    end
-end)
+section:AddLabel("Bomb Jump Options")
+section:AddToggle("Enable Auto Bomb Jump", function(bool) bombJumpEnabled = bool end)
 
 section:AddToggle("Auto-Get Fake Bomb", function(bool)
     autoGetBomb = bool
-end)
-
-section:AddToggle("Enable BJ Button", function(e)
-    guiEnabled = e
-    if e then 
-        CreateBJButton() 
-    else 
-        if BombJumpGuiMaid then BombJumpGuiMaid:DoCleaning() BombJumpGuiMaid = nil end
+    if bool then
+        pcall(function() Services.ReplicatedStorage.Remotes.Extras.ReplicateToy:InvokeServer("FakeBomb") end)
     end
 end)
 
-section:AddSlider("BJ Button Size", 30, 150, bjSize, function(s)
-    bjSize = s
-    if bjBtn then 
-        bjBtn.Size = UDim2.new(0, s, 0, s)
-        bjBtn.Position = UDim2.new(0.5, -s/2, 0.8, 0)
+section:AddToggle("Enable BJ Big Button", function(e)
+    if e then
+        AddBigButton("bombjump_big", "Bomb Jump", FastBombJump, false)
+        local btn = BBSystem.Buttons["bombjump_big"]
+        if btn then
+            btn.Size = __UD2(0, bigButtonSize, 0, bigButtonSize * 0.375)
+        end
+    else
+        DeleteBigButton("bombjump_big")
     end
 end)
 
-section:AddToggle("Enable Timer Display", function(e)
-    timerGuiEnabled = e
-    if e then 
-        CreateTimerDisplay() 
-    else 
-        if BombJumpTimerMaid then BombJumpTimerMaid:DoCleaning() BombJumpTimerMaid = nil end
+section:AddSlider("BJ Big Button Size", 100, 400, 200, function(value)
+    bigButtonSize = value
+    local btn = BBSystem.Buttons["bombjump_big"]
+    if btn then
+        btn.Size = __UD2(0, bigButtonSize, 0, bigButtonSize * 0.375)
     end
 end)
 
-section:AddSlider("Timer Display Size", 30, 150, timerSize, function(s)
-    timerSize = s
-    if timerDisplay then 
-        timerDisplay.Size = UDim2.new(0, s, 0, s)
-        timerDisplay.Position = UDim2.new(0.5, -s/2 + 60, 0.8, 0)
+section:AddToggle("Enable BJ Bind Button", function(e)
+    if e then
+        BindableButtons.AddBButton("bombjump_bind", "BJ", FastBombJump, false)
+        bjBindButton = BindableButtons.Buttons["bombjump_bind"]
+        if bjBindButton then
+            local screen = Services.Workspace.CurrentCamera.ViewportSize
+            bjBindButton.Size = __UD2(bindButtonSize * (screen.Y / screen.X), 0, bindButtonSize, 0)
+            BindableButtons.UpdateBButtonText("bombjump_bind", onCooldown and "Wait" or "BJ", onCooldown, false)
+        end
+    else
+        BindableButtons.DeleteBButton("bombjump_bind")
+        bjBindButton = nil
     end
 end)
 
-section:AddKeybind("Manual Bomb Jump", "E", function()
-    if not onCooldown and not debounce then
-        FastBombJump()
+section:AddSlider("BJ Bind Button Size", 5, 25, 11, function(value)
+    bindButtonSize = value / 100
+    if bjBindButton then
+        local screen = Services.Workspace.CurrentCamera.ViewportSize
+        bjBindButton.Size = __UD2(bindButtonSize * (screen.Y / screen.X), 0, bindButtonSize, 0)
     end
 end)
 
-RootMaid:GiveTask(function()
-    if BombJumpGuiMaid then BombJumpGuiMaid:DoCleaning() end
-    if BombJumpTimerMaid then BombJumpTimerMaid:DoCleaning() end
-    if ClickBombJumpMaid then ClickBombJumpMaid:DoCleaning() end
-    if BombJumpMaid then BombJumpMaid:DoCleaning() end
-    
-    activeTouches = {}
-    ResetCooldown()
-    bombJumpEnabled = false
-    clickBombJumpEnabled = false
-    guiEnabled = false
-    timerGuiEnabled = false
-    autoGetBomb = false
-end)
+section:AddKeybind("Bomb Jump Keybind", "E", FastBombJump)
 
-end
-
+-- GOLD BOMB JUMP SECTION (for Murder Mystery Modded)
 if _game == "Murder Mystery Modded" then
 
 local gbjSection = shared.AddSection("Gold Bomb Jump+")
 
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local UserInputService = game:GetService("UserInputService")
-local Workspace = game:GetService("Workspace")
-
-local LocalPlayer = Players.LocalPlayer
-
-local gbjGui = nil
-local gbjBtn = nil
-local gbjTimerGui = nil
-local gbjTimerDisplay = nil
 local gbjOnCooldown = false
 local goldBombJumpEnabled = false
-local clickGoldBombJumpEnabled = false
-local gbjGuiEnabled = false
-local gbjTimerGuiEnabled = false
 local gbjDebounce = false
-local gbjSize = 40
-local gbjTimerSize = 40
 local autoGetGoldBomb = false
 local gbjJustRespawned = false
-
-local gbjActiveTouches = {}
-local GBJ_TAP_MOVEMENT_THRESHOLD = 10
-local GBJ_TAP_TIME_THRESHOLD = 0.3
+local gbjBigButtonSize = 200
+local gbjBindButtonSize = 0.11
+local gbjBindButton = nil
 
 local GOLD_BOMB_NAME = "GoldBomb"
 
-local GoldBombJumpMaid = nil
-local GoldBombJumpGuiMaid = nil
-local GoldBombJumpTimerMaid = nil
-local ClickGoldBombJumpMaid = nil
+local GoldBombJumpMaid = Maid.new()
+RootMaid:GiveTask(GoldBombJumpMaid)
 
-gbjSection:AddLabel("Different Gold Bomb Jump Options")
+local function GBJResetCooldown()
+    gbjOnCooldown = false
+    local bigBtn = BBSystem.Buttons["goldbombjump_big"]
+    if bigBtn then bigBtn.Text = "Gold Bomb Jump" end
+    if gbjBindButton then
+        BindableButtons.UpdateBButtonText("goldbombjump_bind", "GBJ", false, true)
+    end
+end
 
-function CreateGBJButton()
-    if GoldBombJumpGuiMaid then GoldBombJumpGuiMaid:DoCleaning() GoldBombJumpGuiMaid = nil end
-    GoldBombJumpGuiMaid = Maid.new()
+local function GBJStartCooldown()
+    gbjOnCooldown = true
+    gbjDebounce = false
+    local bigBtn = BBSystem.Buttons["goldbombjump_big"]
+    if bigBtn then bigBtn.Text = "Wait" end
+    if gbjBindButton then
+        BindableButtons.UpdateBButtonText("goldbombjump_bind", "Wait", true, true)
+    end
     
-    gbjGui = Instance.new("ScreenGui", LocalPlayer:WaitForChild("PlayerGui"))
-    gbjGui.Name = "GBJGui"
-    gbjGui.ResetOnSpawn = false
-    GoldBombJumpGuiMaid:GiveTask(gbjGui)
-    
-    gbjBtn = Instance.new("TextButton", gbjGui)
-    gbjBtn.Name = "GBJButton"
-    gbjBtn.Text = "Ready"
-    gbjBtn.TextSize = 14
-    gbjBtn.Size = UDim2.new(0, gbjSize, 0, gbjSize)
-    gbjBtn.Position = UDim2.new(0.5, -gbjSize/2, 0.7, 0)
-    gbjBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-    gbjBtn.TextColor3 = Color3.new(1, 1, 1)
-    gbjBtn.Font = Enum.Font.SourceSans
-    gbjBtn.BackgroundTransparency = 0.3
-    Instance.new("UICorner", gbjBtn).CornerRadius = UDim.new(1, 0)
-    
-    local stroke = Instance.new("UIStroke", gbjBtn)
-    stroke.Thickness = 2.5
-    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    
-    local gradient = Instance.new("UIGradient", stroke)
-    gradient.Color = ColorSequence.new{
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(218, 165, 32)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 0, 0))
-    }
-    gradient.Rotation = 45
-    
-    gbjBtn.MouseButton1Click:Connect(function()
-        if not gbjOnCooldown and not gbjDebounce then
-            FastGoldBombJump()
+    task.spawn(function()
+        for i = 4, 1, -1 do
+            if not gbjOnCooldown then break end
+            local bigBtn = BBSystem.Buttons["goldbombjump_big"]
+            if bigBtn then bigBtn.Text = tostring(i) end
+            if gbjBindButton then
+                BindableButtons.UpdateBButtonText("goldbombjump_bind", tostring(i), true, true)
+            end
+            task.wait(1)
         end
-    end)
-    
-    local dragging, dragStart, startPos
-    gbjBtn.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = gbjBtn.Position
-            input.Changed:Connect(function() 
-                if input.UserInputState == Enum.UserInputState.End then 
-                    dragging = false 
-                end 
-            end)
-        end
-    end)
-    
-    gbjBtn.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            local delta = input.Position - dragStart
-            gbjBtn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-        end
+        if gbjOnCooldown then GBJResetCooldown() end
     end)
 end
 
-function CreateGBJTimerDisplay()
-    if GoldBombJumpTimerMaid then GoldBombJumpTimerMaid:DoCleaning() GoldBombJumpTimerMaid = nil end
-    GoldBombJumpTimerMaid = Maid.new()
-    
-    gbjTimerGui = Instance.new("ScreenGui", LocalPlayer:WaitForChild("PlayerGui"))
-    gbjTimerGui.Name = "GBJTimerGui"
-    gbjTimerGui.ResetOnSpawn = false
-    GoldBombJumpTimerMaid:GiveTask(gbjTimerGui)
-    
-    gbjTimerDisplay = Instance.new("TextLabel", gbjTimerGui)
-    gbjTimerDisplay.Name = "GBJTimerDisplay"
-    gbjTimerDisplay.Text = "Ready"
-    gbjTimerDisplay.TextSize = 14
-    gbjTimerDisplay.Size = UDim2.new(0, gbjTimerSize, 0, gbjTimerSize)
-    gbjTimerDisplay.Position = UDim2.new(0.5, -gbjTimerSize/2 + 60, 0.7, 0)
-    gbjTimerDisplay.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-    gbjTimerDisplay.TextColor3 = Color3.new(1, 1, 1)
-    gbjTimerDisplay.Font = Enum.Font.SourceSans
-    gbjTimerDisplay.BackgroundTransparency = 0.3
-    Instance.new("UICorner", gbjTimerDisplay).CornerRadius = UDim.new(1, 0)
-    
-    local stroke = Instance.new("UIStroke", gbjTimerDisplay)
-    stroke.Thickness = 2.5
-    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    
-    local gradient = Instance.new("UIGradient", stroke)
-    gradient.Color = ColorSequence.new{
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(218, 165, 32)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 0, 0))
-    }
-    gradient.Rotation = 45
-    
-    local dragging = false
-    local dragStart, startPos
-    
-    gbjTimerDisplay.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = gbjTimerDisplay.Position
-            input.Changed:Connect(function() 
-                if input.UserInputState == Enum.UserInputState.End then 
-                    dragging = false 
-                end 
-            end)
-        end
-    end)
-    
-    gbjTimerDisplay.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            local delta = input.Position - dragStart
-            gbjTimerDisplay.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-        end
-    end)
-end
-
-function GBJGetCenterPosition()
+local function GBJGetCenterPosition()
     local character = LocalPlayer.Character
     if character and character:FindFirstChild("HumanoidRootPart") then
-        local camera = Workspace.CurrentCamera
+        local camera = Services.Workspace.CurrentCamera
         local lookDir = camera.CFrame.LookVector
         return character.HumanoidRootPart.Position + (lookDir * 5)
     end
     return nil
 end
 
-function GBJMakeCharacterJump()
+local function GBJMakeCharacterJump()
     local character = LocalPlayer.Character
     if character then
         local humanoid = character:FindFirstChild("Humanoid")
@@ -744,55 +854,7 @@ function GBJMakeCharacterJump()
     end
 end
 
-function GBJResetCooldown()
-    gbjOnCooldown = false
-    
-    if gbjBtn and gbjBtn.Parent then
-        gbjBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-        gbjBtn.Text = "Ready"
-    end
-    
-    if gbjTimerDisplay and gbjTimerDisplay.Parent then
-        gbjTimerDisplay.Text = "Ready"
-        gbjTimerDisplay.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-    end
-end
-
-function GBJStartCooldown()
-    gbjOnCooldown = true
-    gbjDebounce = false
-    
-    if gbjBtn then
-        gbjBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-        gbjBtn.Text = "Wait"
-    end
-    
-    if gbjTimerDisplay then
-        gbjTimerDisplay.Text = "Wait"
-        gbjTimerDisplay.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-    end
-    
-    task.spawn(function()
-        for i = 4, 1, -1 do
-            if not gbjOnCooldown then break end
-            
-            if gbjBtn and gbjBtn.Parent then
-                gbjBtn.Text = tostring(i)
-            end
-            
-            if gbjTimerDisplay then
-                gbjTimerDisplay.Text = tostring(i)
-            end
-            task.wait(1)
-        end
-        
-        if gbjOnCooldown then
-            GBJResetCooldown()
-        end
-    end)
-end
-
-function UnequipGoldBomb()
+local function UnequipGoldBomb()
     task.spawn(function()
         task.wait(0.5)
         local character = LocalPlayer.Character
@@ -805,13 +867,7 @@ function UnequipGoldBomb()
     end)
 end
 
-function GetGoldBombInHand()
-    local character = LocalPlayer.Character
-    if not character then return nil end
-    return character:FindFirstChild(GOLD_BOMB_NAME)
-end
-
-function GetAnyGoldBomb()
+local function GetAnyGoldBomb()
     local character = LocalPlayer.Character
     if not character then return false, nil end
 
@@ -828,7 +884,7 @@ function GetAnyGoldBomb()
     end
 
     local success = pcall(function()
-        ReplicatedStorage.Remotes.Extras.ReplicateToy:InvokeServer("GoldBomb")
+        Services.ReplicatedStorage.Remotes.Extras.ReplicateToy:InvokeServer("GoldBomb")
     end)
 
     if success then
@@ -850,7 +906,7 @@ function GetAnyGoldBomb()
     return false, nil
 end
 
-function FastGoldBombJump()
+local function FastGoldBombJump()
     if gbjOnCooldown or gbjDebounce or gbjJustRespawned then return end
     gbjDebounce = true
 
@@ -882,171 +938,107 @@ function FastGoldBombJump()
     end)
 end
 
-function SetupGoldBombEquipDetection()
-    if ClickGoldBombJumpMaid then ClickGoldBombJumpMaid:DoCleaning() ClickGoldBombJumpMaid = nil end
-    if not clickGoldBombJumpEnabled then return end
-
+local function IsHoldingGoldBomb()
     local character = LocalPlayer.Character
-    if not character then return end
-
-    ClickGoldBombJumpMaid = Maid.new()
-    
-    ClickGoldBombJumpMaid:GiveTask(character.ChildAdded:Connect(function(child)
-        if not clickGoldBombJumpEnabled or gbjJustRespawned then return end
-
-        if child.Name == GOLD_BOMB_NAME then
-            if not gbjOnCooldown and not gbjDebounce then
-                FastGoldBombJump()
-            end
-        end
-    end))
+    if not character then return false end
+    return character:FindFirstChild(GOLD_BOMB_NAME) ~= nil
 end
 
-GoldBombJumpMaid = Maid.new()
-RootMaid:GiveTask(GoldBombJumpMaid)
+local gbjActiveTouches = {}
 
-GoldBombJumpMaid:GiveTask(UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-
-    if input.UserInputType == Enum.UserInputType.Touch or
-       input.UserInputType == Enum.UserInputType.MouseButton1 then
-
-        gbjActiveTouches[input] = {
-            startPosition = input.Position,
-            startTime = tick(),
-            moved = false
-        }
-    end
-end))
-
-GoldBombJumpMaid:GiveTask(UserInputService.InputChanged:Connect(function(input)
-    local gbjTouchData = gbjActiveTouches[input]
-    if not gbjTouchData then return end
-
-    local delta = input.Position - gbjTouchData.startPosition
-    local distance = math.sqrt(delta.X * delta.X + delta.Y * delta.Y)
-
-    if distance > GBJ_TAP_MOVEMENT_THRESHOLD then
-        gbjTouchData.moved = true
-    end
-end))
-
-GoldBombJumpMaid:GiveTask(UserInputService.InputEnded:Connect(function(input, gameProcessed)
-    if gameProcessed then
-        gbjActiveTouches[input] = nil
-        return
-    end
-
-    local gbjTouchData = gbjActiveTouches[input]
-    if not gbjTouchData then return end
-
-    local touchDuration = tick() - gbjTouchData.startTime
-    local isRealTap = not gbjTouchData.moved and touchDuration <= GBJ_TAP_TIME_THRESHOLD
-
-    if isRealTap and goldBombJumpEnabled and not gbjOnCooldown and not gbjDebounce then
-        local bombInHand = GetGoldBombInHand()
-        if bombInHand then
-            FastGoldBombJump()
+GoldBombJumpMaid:GiveTasks(
+    Services.UserInputService.InputBegan:Connect(function(input, gp)
+        if gp then return end
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            gbjActiveTouches[input] = {startPosition = input.Position, startTime = tick(), moved = false}
         end
-    end
-
-    gbjActiveTouches[input] = nil
-end))
-
-GoldBombJumpMaid:GiveTask(LocalPlayer.CharacterAdded:Connect(function()
-    GBJResetCooldown()
-    gbjActiveTouches = {}
-    gbjJustRespawned = true
-
-    task.spawn(function()
+    end),
+    Services.UserInputService.InputChanged:Connect(function(input)
+        local data = gbjActiveTouches[input]
+        if data and (input.Position - data.startPosition).Magnitude > TAP_MOVEMENT_THRESHOLD then
+            data.moved = true
+        end
+    end),
+    Services.UserInputService.InputEnded:Connect(function(input, gp)
+        if gp then gbjActiveTouches[input] = nil return end
+        local data = gbjActiveTouches[input]
+        if data and not data.moved and tick() - data.startTime <= TAP_TIME_THRESHOLD then
+            if goldBombJumpEnabled and not gbjOnCooldown and not gbjDebounce then
+                if IsHoldingGoldBomb() then
+                    FastGoldBombJump()
+                end
+            end
+        end
+        gbjActiveTouches[input] = nil
+    end),
+    LocalPlayer.CharacterAdded:Connect(function()
+        GBJResetCooldown()
+        gbjActiveTouches = {}
+        gbjJustRespawned = true
         task.wait(1)
         gbjJustRespawned = false
+        if autoGetGoldBomb then
+            task.wait(0.2)
+            pcall(function() Services.ReplicatedStorage.Remotes.Extras.ReplicateToy:InvokeServer("GoldBomb") end)
+        end
     end)
+)
 
-    if autoGetGoldBomb then
-        task.wait(1.2)
-        pcall(function()
-            ReplicatedStorage.Remotes.Extras.ReplicateToy:InvokeServer("GoldBomb")
-        end)
-    end
-
-    if clickGoldBombJumpEnabled then
-        task.wait(1.2)
-        SetupGoldBombEquipDetection()
-    end
-end))
-
-gbjSection:AddToggle("Enable Auto Gold Bomb Jump", function(bool)
-    goldBombJumpEnabled = bool
-end)
-
-gbjSection:AddToggle("Enable Equip Gold Bomb Jump", function(bool)
-    clickGoldBombJumpEnabled = bool
-
-    if bool then
-        SetupGoldBombEquipDetection()
-    else
-        if ClickGoldBombJumpMaid then ClickGoldBombJumpMaid:DoCleaning() ClickGoldBombJumpMaid = nil end
-    end
-end)
+gbjSection:AddLabel("Gold Bomb Jump Options")
+gbjSection:AddToggle("Enable Auto Gold Bomb Jump", function(bool) goldBombJumpEnabled = bool end)
 
 gbjSection:AddToggle("Auto-Get Gold Bomb", function(bool)
     autoGetGoldBomb = bool
+    if bool then
+        pcall(function() Services.ReplicatedStorage.Remotes.Extras.ReplicateToy:InvokeServer("GoldBomb") end)
+    end
 end)
 
-gbjSection:AddToggle("Enable GBJ Button", function(e)
-    gbjGuiEnabled = e
+gbjSection:AddToggle("Enable GBJ Big Button", function(e)
     if e then
-        CreateGBJButton()
+        AddBigButton("goldbombjump_big", "Gold Bomb Jump", FastGoldBombJump, true)
+        local btn = BBSystem.Buttons["goldbombjump_big"]
+        if btn then
+            btn.Size = __UD2(0, gbjBigButtonSize, 0, gbjBigButtonSize * 0.375)
+        end
     else
-        if GoldBombJumpGuiMaid then GoldBombJumpGuiMaid:DoCleaning() GoldBombJumpGuiMaid = nil end
+        DeleteBigButton("goldbombjump_big")
     end
 end)
 
-gbjSection:AddSlider("GBJ Button Size", 30, 150, gbjSize, function(s)
-    gbjSize = s
-    if gbjBtn then
-        gbjBtn.Size = UDim2.new(0, s, 0, s)
-        gbjBtn.Position = UDim2.new(0.5, -s/2, 0.7, 0)
+gbjSection:AddSlider("GBJ Big Button Size", 100, 400, 200, function(value)
+    gbjBigButtonSize = value
+    local btn = BBSystem.Buttons["goldbombjump_big"]
+    if btn then
+        btn.Size = __UD2(0, gbjBigButtonSize, 0, gbjBigButtonSize * 0.375)
     end
 end)
 
-gbjSection:AddToggle("Enable GBJ Timer Display", function(e)
-    gbjTimerGuiEnabled = e
+gbjSection:AddToggle("Enable GBJ Bind Button", function(e)
     if e then
-        CreateGBJTimerDisplay()
+        BindableButtons.AddBButton("goldbombjump_bind", "GBJ", FastGoldBombJump, true)
+        gbjBindButton = BindableButtons.Buttons["goldbombjump_bind"]
+        if gbjBindButton then
+            local screen = Services.Workspace.CurrentCamera.ViewportSize
+            gbjBindButton.Size = __UD2(gbjBindButtonSize * (screen.Y / screen.X), 0, gbjBindButtonSize, 0)
+            BindableButtons.UpdateBButtonText("goldbombjump_bind", gbjOnCooldown and "Wait" or "GBJ", gbjOnCooldown, true)
+        end
     else
-        if GoldBombJumpTimerMaid then GoldBombJumpTimerMaid:DoCleaning() GoldBombJumpTimerMaid = nil end
+        BindableButtons.DeleteBButton("goldbombjump_bind")
+        gbjBindButton = nil
     end
 end)
 
-gbjSection:AddSlider("GBJ Timer Display Size", 30, 150, gbjTimerSize, function(s)
-    gbjTimerSize = s
-    if gbjTimerDisplay then
-        gbjTimerDisplay.Size = UDim2.new(0, s, 0, s)
-        gbjTimerDisplay.Position = UDim2.new(0.5, -s/2 + 60, 0.7, 0)
+gbjSection:AddSlider("GBJ Bind Button Size", 5, 25, 11, function(value)
+    gbjBindButtonSize = value / 100
+    if gbjBindButton then
+        local screen = Services.Workspace.CurrentCamera.ViewportSize
+        gbjBindButton.Size = __UD2(gbjBindButtonSize * (screen.Y / screen.X), 0, gbjBindButtonSize, 0)
     end
 end)
 
-gbjSection:AddKeybind("Manual Gold Bomb Jump", "G", function()
-    if not gbjOnCooldown and not gbjDebounce then
-        FastGoldBombJump()
-    end
-end)
+gbjSection:AddKeybind("Gold Bomb Jump Keybind", "G", FastGoldBombJump)
 
-RootMaid:GiveTask(function()
-    if GoldBombJumpGuiMaid then GoldBombJumpGuiMaid:DoCleaning() end
-    if GoldBombJumpTimerMaid then GoldBombJumpTimerMaid:DoCleaning() end
-    if ClickGoldBombJumpMaid then ClickGoldBombJumpMaid:DoCleaning() end
-    if GoldBombJumpMaid then GoldBombJumpMaid:DoCleaning() end
-    
-    gbjActiveTouches = {}
-    GBJResetCooldown()
-    goldBombJumpEnabled = false
-    clickGoldBombJumpEnabled = false
-    gbjGuiEnabled = false
-    gbjTimerGuiEnabled = false
-    autoGetGoldBomb = false
-end)
+end
 
 end
