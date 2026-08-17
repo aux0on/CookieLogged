@@ -503,7 +503,6 @@ local _game = shared.game_name
 
 if _game == "Murder Mystery 2" or _game == "Murder Mystery Modded" then
 
--- ABOUT SECTION
 local aboutSection = shared.AddSection("About")
 
 aboutSection:AddParagraph("Bomb Jump+", "Plugin Made by @lzzzx")
@@ -515,7 +514,6 @@ end)
 
 shared.Notify("Bomb Jump+ Successfully Loaded", 5)
 
--- BOMB JUMP SECTION
 local section = shared.AddSection("Bomb Jump+")
 
 local onCooldown = false
@@ -531,6 +529,27 @@ local BOMB_NAMES = {"FakeBomb"}
 
 local BombJumpMaid = Maid.new()
 RootMaid:GiveTask(BombJumpMaid)
+
+local function IsPlayerInAir()
+    local character = LocalPlayer.Character
+    if not character then return false end
+    
+    local humanoid = character:FindFirstChild("Humanoid")
+    if not humanoid then return false end
+    
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return false end
+    
+    local state = humanoid:GetState()
+    if state == Enum.HumanoidStateType.Jumping or 
+       state == Enum.HumanoidStateType.FallingDown or
+       state == Enum.HumanoidStateType.Freefall then
+        return true
+    end
+    
+    local velocityY = rootPart.Velocity.Y
+    return math.abs(velocityY) > 0.5
+end
 
 local function ResetCooldown()
     onCooldown = false
@@ -643,6 +662,7 @@ local function GetAnyBomb()
 end
 
 local function FastBombJump()
+    if not IsPlayerInAir() then return end
     if onCooldown or debounce or justRespawned then return end
     debounce = true
     
@@ -708,7 +728,7 @@ BombJumpMaid:GiveTasks(
         local data = activeTouches[input]
         if data and not data.moved and tick() - data.startTime <= TAP_TIME_THRESHOLD then
             if bombJumpEnabled and not onCooldown and not debounce then
-                if IsHoldingBomb() then
+                if IsHoldingBomb() and IsPlayerInAir() then
                     FastBombJump()
                 end
             end
@@ -783,7 +803,6 @@ end)
 
 section:AddKeybind("Bomb Jump Keybind", "E", FastBombJump)
 
--- GOLD BOMB JUMP SECTION (for Murder Mystery Modded)
 if _game == "Murder Mystery Modded" then
 
 local gbjSection = shared.AddSection("Gold Bomb Jump+")
@@ -907,6 +926,7 @@ local function GetAnyGoldBomb()
 end
 
 local function FastGoldBombJump()
+    if not IsPlayerInAir() then return end
     if gbjOnCooldown or gbjDebounce or gbjJustRespawned then return end
     gbjDebounce = true
 
@@ -964,7 +984,7 @@ GoldBombJumpMaid:GiveTasks(
         local data = gbjActiveTouches[input]
         if data and not data.moved and tick() - data.startTime <= TAP_TIME_THRESHOLD then
             if goldBombJumpEnabled and not gbjOnCooldown and not gbjDebounce then
-                if IsHoldingGoldBomb() then
+                if IsHoldingGoldBomb() and IsPlayerInAir() then
                     FastGoldBombJump()
                 end
             end
